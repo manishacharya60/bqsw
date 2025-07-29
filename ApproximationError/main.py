@@ -142,25 +142,166 @@
 
 # main.py
 
+# import torch
+# import numpy as np
+# import matplotlib.pyplot as plt
+# import sys
+# import random
+# from tqdm import tqdm
+# from collections import OrderedDict
+
+# sys.path.append('..')
+
+# # Make sure qsw.py is in the same directory or Python path
+# from qsw import (
+#     get_eqsw_projections,
+#     get_gqsw_projections,
+#     get_sqsw_projections,
+#     get_dqsw_projections, 
+#     get_cqsw_projections, 
+#     get_bosw_bayesian,
+#     get_bosw_coverage_focused,
+#     one_dimensional_Wasserstein_prod
+# )
+# from PointcloudAE.dataset.shapenet_core55 import ShapeNetCore55XyzOnlyDataset
+
+# def rand_projections(dim, num_projections=1000, device='cpu'):
+#     projections = torch.randn((num_projections, dim), device=device)
+#     projections = projections / torch.sqrt(torch.sum(projections ** 2, dim=1, keepdim=True))
+#     return projections
+
+# def run_full_replication():
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     print(f"Using device: {device}")
+
+#     # --- Load Data ---
+#     print("Loading ShapeNet data...")
+#     # NOTE: Update this path to where your data is stored
+#     data_file_path = "/Users/manishacharya/Developer/Research/Quasi-SW/PointcloudAE/dataset/shapenet_core55/shapenet57448xyzonly.npz"
+#     try:
+#         dataset = ShapeNetCore55XyzOnlyDataset(root=data_file_path, num_points=2048, phase="test")
+#     except FileNotFoundError:
+#         print(f"FATAL: Data file not found at {data_file_path}")
+#         return
+    
+#     pcs = [torch.from_numpy(dataset[i]).float().to(device) for i in range(5)]
+#     print("Data loaded.")
+
+#     # --- Setup Experiment ---
+#     # L_values = [10,100,500,1000,2000,5000,10000]
+#     L_values = [10,100, 500, 1000]
+    
+#     # --- IMPORTANT: Updated methods dictionary ---
+#     # All lambdas now accept (L, device, pc1, pc2) for a consistent interface.
+#     # The QMC methods simply ignore pc1 and pc2.
+#     methods = {
+#         'SW':    lambda L, dev, pc1, pc2, seed: rand_projections(dim=3, num_projections=L, device=dev),
+#         'EQSW':  lambda L, dev, pc1, pc2, seed: get_eqsw_projections(L, dev),
+#         'GQSW':  lambda L, dev, pc1, pc2, seed: get_gqsw_projections(L, dev),
+#         'SQSW':  lambda L, dev, pc1, pc2, seed: get_sqsw_projections(L, dev),
+#         'DQSW':  lambda L, dev, pc1, pc2, seed: get_dqsw_projections(L, dev),
+#         'CQSW':  lambda L, dev, pc1, pc2, seed: get_cqsw_projections(L, dev),
+#         # 'BOSW': lambda L, device, pc1, pc2, seed=None: get_bosw_bayesian(L, device, pc1, pc2, ai="ucb", seed=seed),
+#         'BOSW': lambda L, device, pc1, pc2, seed=None: get_bosw_coverage_focused(L, device, pc1, pc2),
+#     }
+
+#     pair_indices = [(0, 1), (0, 2), (1, 3), (2, 3)] 
+#     # pair_indices = [(0, 1)] 
+
+#     # --- Create Subplots ---
+#     fig, axes = plt.subplots(1, 4, figsize=(28, 7), sharey=True)
+#     axes = axes.flatten()
+
+#     plot_config = {
+#         'SW':    {'label': 'SW', 'color': 'red', 'marker': 'o'},
+#         'GQSW':  {'label': 'GQSW', 'color': 'orange', 'marker': 'd'},
+#         'EQSW':  {'label': 'EQSW', 'color': 'green', 'marker': 'v'},
+#         'SQSW':  {'label': 'SQSW', 'color': 'deepskyblue', 'marker': '|'},
+#         'DQSW':  {'label': 'DQSW', 'color': 'olive', 'marker': 'h'},
+#         'CQSW':  {'label': 'CQSW', 'color': 'blue', 'marker': 's'},
+#         'BOSW': {'label': 'BOSW', 'color': 'purple', 'marker': '*', 'linestyle': '--'},
+#     }
+
+#     # --- Run Experiments ---
+#     for idx, (pi, pj) in enumerate(pair_indices):
+#         ax = axes[idx]
+#         pair_label = f"{pi+1} vs {pj+1}"
+#         print(f"\n--- Running experiment for Pair {pair_label} ---")
+
+#         pc1, pc2 = pcs[pi], pcs[pj]
+#         errors = {name: [] for name in methods}
+
+#         print(f"Calculating ground truth for Pair {pair_label}...")
+#         gt_projections = rand_projections(dim=3, num_projections=100000, device=device)
+#         gt_sw_sq = one_dimensional_Wasserstein_prod(pc1, pc2, gt_projections, p=2).mean().item()
+#         gt_sw = np.sqrt(gt_sw_sq)
+#         print(f"Ground Truth SW: {gt_sw:.6f}")
+
+#         for name, proj_func in methods.items():
+#             for L in tqdm(L_values, desc=f"{name.upper():<6} ({pair_label})"):
+#                 seed_errors = []
+#                 for seed in range(1, 6):  # Run seeds 1 to 5
+#                     torch.manual_seed(seed)
+#                     np.random.seed(seed)
+#                     random.seed(seed)
+#                     projections = proj_func(L, device, pc1, pc2, seed=seed)
+#                     sw_sq = one_dimensional_Wasserstein_prod(pc1, pc2, projections, p=2).mean().item()
+#                     error = np.abs(np.sqrt(sw_sq) - gt_sw)
+#                     seed_errors.append(error)
+#                 errors[name].append(np.mean(seed_errors))
+
+
+#         for name, style_args in plot_config.items():
+#             if name in errors:
+#                 base_style = {'linestyle': '-', 'linewidth': 2, 'markersize': 8}
+#                 base_style.update(style_args)
+#                 ax.plot(L_values, errors[name], **base_style)
+
+#         ax.set_xscale('log')
+#         ax.set_yscale('log')
+#         ax.set_xticks(L_values)
+#         ax.set_xticklabels(L_values)
+#         ax.tick_params(axis='x', rotation=45, labelsize=10)
+#         ax.set_xlabel("L (Number of Projections)", fontsize=12)
+#         if idx == 0:
+#             ax.set_ylabel("Absolute Error", fontsize=12)
+#         ax.set_title(pair_label, fontsize=14, fontweight='bold')
+#         ax.grid(True, which="both", linestyle="--", alpha=0.6)
+
+#     # --- Global Legend ---
+#     handles = [plt.Line2D([0], [0], **plot_config[name]) for name in methods]
+#     labels = [plot_config[name]['label'] for name in methods]
+    
+#     fig.legend(handles, labels, loc='lower center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1), fontsize=12)
+#     fig.suptitle("Approximation Error of SW Estimators (including BOSW)", fontsize=20, fontweight='bold')
+#     plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+#     plt.savefig("figure1_replication_with_bo.png", bbox_inches='tight', dpi=300)
+#     print("\n✅ Plot saved to figure1_replication_with_bo.png")
+#     plt.show()
+
+# if __name__ == "__main__":
+#     run_full_replication()
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
+import random
 from tqdm import tqdm
 from collections import OrderedDict
+from bq import *
 
 sys.path.append('..')
 
-# Make sure qsw.py is in the same directory or Python path
+# Import projection and utility methods
 from qsw import (
     get_eqsw_projections,
     get_gqsw_projections,
     get_sqsw_projections,
     get_dqsw_projections, 
-    get_cqsw_projections,
-    get_smart_bo_coverage,
-    get_bosw_coverage_plus,
-    get_bosw_coverage_focused,  # <-- Import the new method
+    get_cqsw_projections, 
+    get_bosw_bayesian,
+    get_bosw_coverage_focused,
     one_dimensional_Wasserstein_prod
 )
 from PointcloudAE.dataset.shapenet_core55 import ShapeNetCore55XyzOnlyDataset
@@ -174,9 +315,7 @@ def run_full_replication():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- Load Data ---
-    print("Loading ShapeNet data...")
-    # NOTE: Update this path to where your data is stored
+    # Load ShapeNet data
     data_file_path = "/Users/manishacharya/Developer/Research/Quasi-SW/PointcloudAE/dataset/shapenet_core55/shapenet57448xyzonly.npz"
     try:
         dataset = ShapeNetCore55XyzOnlyDataset(root=data_file_path, num_points=2048, phase="test")
@@ -187,31 +326,24 @@ def run_full_replication():
     pcs = [torch.from_numpy(dataset[i]).float().to(device) for i in range(5)]
     print("Data loaded.")
 
-    # --- Setup Experiment ---
-    L_values = [10,100,500,1000,2000,5000, 10000]
-    # L_values = [10,100]
+    # L_values = [10,100,500,1000,2000,5000,10000]
+    L_values = [10,100,500, 1000]
     
-    # --- IMPORTANT: Updated methods dictionary ---
-    # All lambdas now accept (L, device, pc1, pc2) for a consistent interface.
-    # The QMC methods simply ignore pc1 and pc2.
     methods = {
-        'SW':    lambda L, dev, pc1, pc2: rand_projections(dim=3, num_projections=L, device=dev),
-        'EQSW':  lambda L, dev, pc1, pc2: get_eqsw_projections(L, dev),
-        'GQSW':  lambda L, dev, pc1, pc2: get_gqsw_projections(L, dev),
-        'SQSW':  lambda L, dev, pc1, pc2: get_sqsw_projections(L, dev),
-        'DQSW':  lambda L, dev, pc1, pc2: get_dqsw_projections(L, dev),
-        'CQSW':  lambda L, dev, pc1, pc2: get_cqsw_projections(L, dev),
-        'BOSW': lambda L, device, pc1, pc2: get_bosw_coverage_focused(
-    L, device, pc1, pc2
-)
-
+        'SW':    lambda L, dev, pc1, pc2, seed: rand_projections(dim=3, num_projections=L, device=dev),
+        'EQSW':  lambda L, dev, pc1, pc2, seed: get_eqsw_projections(L, dev),
+        'GQSW':  lambda L, dev, pc1, pc2, seed: get_gqsw_projections(L, dev),
+        'SQSW':  lambda L, dev, pc1, pc2, seed: get_sqsw_projections(L, dev),
+        'DQSW':  lambda L, dev, pc1, pc2, seed: get_dqsw_projections(L, dev),
+        'CQSW':  lambda L, dev, pc1, pc2, seed: get_cqsw_projections(L, dev),
+        'BOSW':  lambda L, dev, pc1, pc2, seed: get_bosw_bayesian(L, dev, pc1, pc2, seed=seed),
+        'BQSW':  lambda L, dev, pc1, pc2, seed: get_bqsw_projections(L, dev, pc1, pc2)[0],
     }
 
-    pair_indices = [(0, 1), (0, 2), (1, 3), (2, 3)] 
-    # pair_indices = [(0, 1)] 
+    # pair_indices = [(0, 1), (0, 2), (1, 3), (2, 3)] 
+    pair_indices = [(0, 1)] 
 
-    # --- Create Subplots ---
-    fig, axes = plt.subplots(1, 4, figsize=(28, 7), sharey=True)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharey=True)
     axes = axes.flatten()
 
     plot_config = {
@@ -221,10 +353,10 @@ def run_full_replication():
         'SQSW':  {'label': 'SQSW', 'color': 'deepskyblue', 'marker': '|'},
         'DQSW':  {'label': 'DQSW', 'color': 'olive', 'marker': 'h'},
         'CQSW':  {'label': 'CQSW', 'color': 'blue', 'marker': 's'},
-        'BOSW': {'label': 'BOSW (Ours)', 'color': 'purple', 'marker': '*', 'linestyle': '--'},
+        'BOSW':  {'label': 'BOSW', 'color': 'purple', 'marker': '*', 'linestyle': '--'},
+        'BQSW':  {'label': 'BQSW', 'color': 'black', 'marker': '*', 'linestyle': '--'},
     }
 
-    # --- Run Experiments ---
     for idx, (pi, pj) in enumerate(pair_indices):
         ax = axes[idx]
         pair_label = f"{pi+1} vs {pj+1}"
@@ -241,11 +373,16 @@ def run_full_replication():
 
         for name, proj_func in methods.items():
             for L in tqdm(L_values, desc=f"{name.upper():<6} ({pair_label})"):
-                # The call is now consistent for all methods
-                projections = proj_func(L, device, pc1, pc2)
-                sw_sq = one_dimensional_Wasserstein_prod(pc1, pc2, projections, p=2).mean().item()
-                error = np.abs(np.sqrt(sw_sq) - gt_sw)
-                errors[name].append(error)
+                seed_errors = []
+                for seed in range(1, 2):
+                    torch.manual_seed(seed)
+                    np.random.seed(seed)
+                    random.seed(seed)
+                    projections = proj_func(L, device, pc1, pc2, seed=seed)
+                    sw_sq = one_dimensional_Wasserstein_prod(pc1, pc2, projections, p=2).mean().item()
+                    error = np.abs(np.sqrt(sw_sq) - gt_sw)
+                    seed_errors.append(error)
+                errors[name].append(np.mean(seed_errors))
 
         for name, style_args in plot_config.items():
             if name in errors:
@@ -259,21 +396,18 @@ def run_full_replication():
         ax.set_xticklabels(L_values)
         ax.tick_params(axis='x', rotation=45, labelsize=10)
         ax.set_xlabel("L (Number of Projections)", fontsize=12)
-        if idx == 0:
+        if idx % 2 == 0:
             ax.set_ylabel("Absolute Error", fontsize=12)
         ax.set_title(pair_label, fontsize=14, fontweight='bold')
         ax.grid(True, which="both", linestyle="--", alpha=0.6)
+        ax.legend(loc='upper right', fontsize=9)
 
-    # --- Global Legend ---
-    handles = [plt.Line2D([0], [0], **plot_config[name]) for name in methods]
-    labels = [plot_config[name]['label'] for name in methods]
-    
-    fig.legend(handles, labels, loc='lower center', ncol=len(methods), bbox_to_anchor=(0.5, -0.1), fontsize=12)
     fig.suptitle("Approximation Error of SW Estimators (including BOSW)", fontsize=20, fontweight='bold')
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.savefig("figure1_replication_with_bo.png", bbox_inches='tight', dpi=300)
-    print("\n✅ Plot saved to figure1_replication_with_bo.png")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig("figure1_replication_with_bo_updated_layout.png", bbox_inches='tight', dpi=300)
+    print("\n✅ Plot saved to figure1_replication_with_bo_updated_layout.png")
     plt.show()
 
 if __name__ == "__main__":
     run_full_replication()
+

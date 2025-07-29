@@ -236,6 +236,26 @@ start = time.time()
 ROCQSWcluster,ROCQSW = transform_SW(source_values,target_values,source_labels,source,L=args.L,sw_type='rocqsw',num_iter=args.num_iter)
 ROCQSWtime = np.round(time.time() - start,2)
 
+#BOSW
+for _ in range(1000):
+    a = np.random.randn(100)
+    a = torch.randn(100)
+
+start = time.time()
+BOSWcluster, BOSW = transform_SW(source_values, target_values, source_labels, source, 
+                                 L=args.L, sw_type='bosw', num_iter=args.num_iter)
+BOSWtime = np.round(time.time() - start, 2)
+
+# RBOSW
+for _ in range(1000):
+    a = np.random.randn(100)
+    a = torch.randn(100)
+
+start = time.time()
+RBOSWcluster, RBOSW = transform_SW(source_values, target_values, source_labels, source, 
+                                   L=args.L, sw_type='rbosw', num_iter=args.num_iter)  # Update every 100 iterations
+RBOSWtime = np.round(time.time() - start, 2)
+
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 unused import
 source3=source_values.reshape(-1,3)
 reshaped_target3=target_values.reshape(-1,3)
@@ -253,6 +273,8 @@ ODQSWcluster=ODQSWcluster/np.max(ODQSWcluster)*255
 RODQSWcluster=RODQSWcluster/np.max(RODQSWcluster)*255
 OCQSWcluster=OCQSWcluster/np.max(OCQSWcluster)*255
 ROCQSWcluster=ROCQSWcluster/np.max(ROCQSWcluster)*255
+BOSWcluster = BOSWcluster / np.max(BOSWcluster) * 255
+RBOSWcluster = RBOSWcluster / np.max(RBOSWcluster) * 255
 
 # f.suptitle("L={}, k={}, T={}".format(L, k, iter), fontsize=20)
 C_SW = ot.dist(SWcluster,reshaped_target3)
@@ -268,6 +290,8 @@ C_ODQSW = ot.dist(ODQSWcluster,reshaped_target3)
 C_RODQSW = ot.dist(RODQSWcluster,reshaped_target3)
 C_OCQSW = ot.dist(OCQSWcluster,reshaped_target3)
 C_ROCQSW = ot.dist(ROCQSWcluster,reshaped_target3)
+C_BOSW = ot.dist(BOSWcluster, reshaped_target3)
+C_RBOSW = ot.dist(RBOSWcluster, reshaped_target3)
 
 W_SW = np.round(ot.emd2([],[],C_SW),2)
 W_NQSW = np.round(ot.emd2([],[],C_NQSW),2)
@@ -282,60 +306,108 @@ W_ODQSW = np.round(ot.emd2([],[],C_ODQSW),2)
 W_RODQSW = np.round(ot.emd2([],[],C_RODQSW),2)
 W_OCQSW = np.round(ot.emd2([],[],C_OCQSW),2)
 W_ROCQSW = np.round(ot.emd2([],[],C_ROCQSW),2)
+W_BOSW = np.round(ot.emd2([], [], C_BOSW), 2)
+W_RBOSW = np.round(ot.emd2([], [], C_RBOSW), 2)
 # SW_SW = np.round(SW(SWcluster.float(),torch.from_numpy(reshaped_target3).float(),L=100000))
 
+# Create the 4x5 grid
+# fig, ax = plt.subplots(4, 5, figsize=(15, 9))  # Slightly larger
 
+# # Turn off all axes for a clean look
+# for axs in ax.flatten():
+#     axs.axis('off')
 
+# # --- Row 0 ---
+# ax[0, 0].set_title('Source', fontsize=13)
+# ax[0, 0].imshow(source)
 
-f, ax = plt.subplots(3, 5, figsize=(12, 5))
-ax[0,0].set_title('Source', fontsize=14)
-ax[0,0].imshow(source)
+# ax[0, 1].set_title('SW\n$W_2={:.4f}$'.format(W_SW), fontsize=12)
+# ax[0, 1].imshow(SW)
 
-ax[0,1].set_title('SW, $W_2={}$'.format(W_SW), fontsize=12)
-ax[0,1].imshow(SW)
+# ax[0, 2].set_title('GQSW\n$W_2={:.4f}$'.format(W_NQSW), fontsize=12)
+# ax[0, 2].imshow(NQSW)
 
-ax[0,3].set_title('GQSW, $W_2={}$'.format(W_NQSW), fontsize=12)
-ax[0,3].imshow(NQSW)
+# ax[0, 3].set_title('RGQSW\n$W_2={:.4f}$'.format(W_RNQSW), fontsize=12)
+# ax[0, 3].imshow(RNQSW)
 
-ax[0,4].set_title('RGQSW, $W_2={}$'.format(W_RNQSW), fontsize=12)
-ax[0,4].imshow(RNQSW)
+# # --- Row 1 ---
+# ax[1, 0].set_title('EQSW\n$W_2={:.4f}$'.format(W_QSW), fontsize=12)
+# ax[1, 0].imshow(QSW)
 
-ax[1,0].set_title('EQSW, $W_2={}$'.format(W_QSW), fontsize=12)
-ax[1,0].imshow(QSW)
+# ax[1, 1].set_title('REQSW\n$W_2={:.4f}$'.format(W_RQSW), fontsize=12)
+# ax[1, 1].imshow(RQSW)
 
-ax[1,1].set_title('REQSW, $W_2={}$'.format(W_RQSW), fontsize=12)
-ax[1,1].imshow(RQSW)
+# ax[1, 2].set_title('RREQSW\n$W_2={:.4f}$'.format(W_RQSW), fontsize=12)
+# ax[1, 2].imshow(RQSW)
 
-ax[1,2].set_title('RREQSW, $W_2={}$'.format(W_RQSW), fontsize=12)
-ax[1,2].imshow(RQSW)
+# ax[1, 3].set_title('SQSW\n$W_2={:.4f}$'.format(W_SQSW), fontsize=12)
+# ax[1, 3].imshow(SQSW)
 
-ax[1,3].set_title('SQSW, $W_2={}$'.format(W_SQSW), fontsize=12)
-ax[1,3].imshow(SQSW)
+# ax[1, 4].set_title('RSQSW\n$W_2={:.4f}$'.format(W_RSQSW), fontsize=12)
+# ax[1, 4].imshow(RSQSW)
 
-ax[1,4].set_title('RSQSW, $W_2={}$'.format(W_RSQSW), fontsize=12)
-ax[1,4].imshow(RSQSW)
+# # --- Row 2 ---
+# ax[2, 0].set_title('DQSW\n$W_2={:.4f}$'.format(W_ODQSW), fontsize=12)
+# ax[2, 0].imshow(ODQSW)
 
-ax[2,0].set_title('DQSW, $W_2={}$'.format(W_ODQSW), fontsize=12)
-ax[2,0].imshow(ODQSW)
+# ax[2, 1].set_title('RDQSW\n$W_2={:.4f}$'.format(W_RODQSW), fontsize=12)
+# ax[2, 1].imshow(RODQSW)
 
-ax[2,1].set_title('RDQSW, $W_2={}$'.format(W_RODQSW), fontsize=12)
-ax[2,1].imshow(RODQSW)
+# ax[2, 2].set_title('CQSW\n$W_2={:.4f}$'.format(W_OCQSW), fontsize=12)
+# ax[2, 2].imshow(OCQSW)
 
-ax[2,2].set_title('CQSW, $W_2={}$'.format(W_OCQSW), fontsize=12)
-ax[2,2].imshow(OCQSW)
+# ax[2, 3].set_title('RCQSW\n$W_2={:.4f}$'.format(W_ROCQSW), fontsize=12)
+# ax[2, 3].imshow(ROCQSW)
 
+# ax[2, 4].set_title('Target', fontsize=13)
+# ax[2, 4].imshow(reshaped_target)
 
-ax[2,3].set_title('RCQSW, $W_2={}$'.format(W_ROCQSW), fontsize=12)
-ax[2,3].imshow(ROCQSW)
+# # --- Row 3 ---
+# ax[3, 0].set_title('BOSW\n$W_2={:.4f}$'.format(W_BOSW), fontsize=12)
+# ax[3, 0].imshow(BOSW)
 
-ax[2,4].set_title('Target', fontsize=14)
-ax[2,4].imshow(reshaped_target)
+# ax[3, 1].set_title('RBOSW\n$W_2={:.4f}$'.format(W_RBOSW), fontsize=12)
+# ax[3, 1].imshow(RBOSW)
+
+fig, ax = plt.subplots(2, 5, figsize=(10, 4))  # 3 rows, 4 columns
+
+# Turn off all axes initially
+for axs in ax.flatten():
+    axs.axis('off')
+
+# Define images and titles with W2 values
+images = [
+    ("Source", source, None),
+    ("SW", SW, W_SW),
+    ("RGQSW", RNQSW, W_RNQSW),
+    ("RSQSW", RSQSW, W_RSQSW),
+    ("RDQSW", RODQSW, W_RODQSW),
+    ("CQSW", OCQSW, W_OCQSW),
+    ("RCQSW", ROCQSW, W_ROCQSW),
+    ("BOSW", BOSW, W_BOSW),
+    ("RBOSW", RBOSW, W_RBOSW),
+    ("Target", reshaped_target, None),
+]
+
+# Loop over and assign each image to the subplot
+for idx, (title, img, w2) in enumerate(images):
+    row, col = divmod(idx, 5)
+    ax[row, col].imshow(img)
+    if w2 is not None:
+        ax[row, col].set_title(f"{title}$W_2={w2:.4f}$", fontsize=10)
+    else:
+        ax[row, col].set_title(title, fontsize=13)
+    ax[row, col].axis('off')
+
+# Hide empty cells
+# for i in [(0,2), (3,2), (3,3), (3,4)]:
+#     ax[i].axis('off')
 # ax[3,3].scatter(reshaped_target3[:, 0], reshaped_target3[:, 1], reshaped_target3[:, 2], c=reshaped_target3 / 255)
 
-for i in range(3):
-    for j in range(5):
-        ax[i,j].get_yaxis().set_visible(False)
-        ax[i,j].get_xaxis().set_visible(False)
+# for i in range(3):
+#     for j in range(5):
+#         ax[i,j].get_yaxis().set_visible(False)
+#         ax[i,j].get_xaxis().set_visible(False)
 
 plt.tight_layout()
 plt.subplots_adjust(left=0, right=1, top=0.88, bottom=0.01, wspace=0, hspace=0.145)
