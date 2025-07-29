@@ -98,10 +98,11 @@ if __name__ == '__main__':
     # --- Configuration for the analysis ---
     # Add the methods you want to compare to this list.
     # The names must match the file prefixes (e.g., 'QSW', 'SW', 'BQSW').
-    methods_to_compare = ['QSW', 'BQSW', 'SW']
+    # methods_to_compare = ['RBOSW', 'RRQSW', 'RRNQSW', 'SW', 'RQSW']
+    methods_to_compare = ['SW', 'QSW', 'BOSW', 'RBOSW', 'ROCQSW']
     
     # Specify the number of projections (L) you want to see on the plots.
-    L_values_to_plot = [10, 100]
+    L_values_to_plot = [10]
     
     # --- Run the analysis ---
     plot_convergence_results(methods_to_compare, L_values_to_plot)

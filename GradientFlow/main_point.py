@@ -10,11 +10,9 @@ the registration of one blob onto another.
 # Setup
 # ---------------------
 import time
-import sys
 from utils import *
 import numpy as np
 import torch
-from bq_utils import bqsw_projections
 for _ in range(1000):
     torch.randn(100)
     np.random.rand(100)
@@ -22,7 +20,7 @@ A = np.load("reconstruct_random_100_shapenetcore55.npy")
 
 ind1=0
 ind2=98
-device='cpu'
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 target=A[ind2]
 source=torch.randn(target.shape) #A[ind1]
 source = source/torch.sqrt(torch.sum(source**2,dim=1,keepdim=True))
@@ -38,84 +36,36 @@ N=target.shape[0]
 Xdetach = X.detach()
 Ydetach = Y.detach()
 
-
-update_frequency = 25 
-
-for L in Ls:
-    for seed in [1, 2, 3]:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        random.seed(seed)
-
-        X = torch.tensor(source, requires_grad=True, device=device)
-        optimizer = torch.optim.SGD([X], lr=learning_rate)
-
-        points = []
-        caltimes = []
-        distances = []
-        start = time.time()
-        theta = None
-
-        for i in range(N_step):
-            if i in print_steps:
-                distance = compute_true_Wasserstein(X, Y)
-                cal_time = time.time() - start
-                print(f"BQSW W {i+1}: {distance} ({np.round(cal_time, 2)}s)")
-                points.append(X.clone().cpu().data.numpy())
-                caltimes.append(cal_time)
-                distances.append(distance)
-
-            optimizer.zero_grad()
-
-            if theta is None or i % update_frequency == 0:
-                theta = bqsw_projections(
-                    X.detach().to(dtype=torch.float32),
-                    Y.detach().to(dtype=torch.float32),
-                    num_projections=L,
-                    device=device
-                )
-
-            sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta, p=2).mean(), 1. / 2)
-            loss = N * sw
-            loss.backward()
-            optimizer.step()
-
-        points.append(Y.clone().cpu().data.numpy())
-
-        np.save(f"saved/BQSW_L{L}_{ind1}_{ind2}_points_seed{seed}.npy", np.stack(points))
-        np.savetxt(f"saved/BQSW_L{L}_{ind1}_{ind2}_distances_seed{seed}.txt", np.array(distances), delimiter=",")
-        np.savetxt(f"saved/BQSW_L{L}_{ind1}_{ind2}_times_seed{seed}.txt", np.array(caltimes), delimiter=",")
-
-for _ in range(1000):
-    torch.randn(100)
-    np.random.rand(100)
-for L in Ls:
-    for seed in [1,2,3]:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        random.seed(seed)
-        X=torch.tensor(source, requires_grad=True,device=device)
-        optimizer = torch.optim.SGD([X], lr=learning_rate)
-        points=[]
-        caltimes=[]
-        distances=[]
-        start = time.time()
-        for i in range(N_step):
-            if (i in print_steps):
-                distance,cal_time=compute_true_Wasserstein(X, Y), time.time() - start
-                print("W {}:{} ({}s)".format(i + 1, distance,np.round(cal_time,2)))
-                points.append(X.clone().cpu().data.numpy())
-                caltimes.append(cal_time)
-                distances.append(distance)
-            optimizer.zero_grad()
-            sw= SW(X,Y,L=L,p=2)
-            loss= N*sw
-            loss.backward()
-            optimizer.step()
-        points.append(Y.clone().cpu().data.numpy())
-        np.save("saved/SW_L{}_{}_{}_points_seed{}.npy".format(L,ind1,ind2,seed),np.stack(points))
-        np.savetxt("saved/SW_L{}_{}_{}_distances_seed{}.txt".format(L,ind1,ind2,seed), np.array(distances), delimiter=",")
-        np.savetxt("saved/SW_L{}_{}_{}_times_seed{}.txt".format(L,ind1,ind2,seed), np.array(caltimes), delimiter=",")
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+# for L in Ls:
+#     for seed in [1,2,3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+#         X=torch.tensor(source, requires_grad=True,device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points=[]
+#         caltimes=[]
+#         distances=[]
+#         start = time.time()
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance,cal_time=compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("W {}:{} ({}s)".format(i + 1, distance,np.round(cal_time,2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+#             optimizer.zero_grad()
+#             sw= SW(X,Y,L=L,p=2)
+#             loss= N*sw
+#             loss.backward()
+#             optimizer.step()
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/SW_L{}_{}_{}_points_seed{}.npy".format(L,ind1,ind2,seed),np.stack(points))
+#         np.savetxt("saved/SW_L{}_{}_{}_distances_seed{}.txt".format(L,ind1,ind2,seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/SW_L{}_{}_{}_times_seed{}.txt".format(L,ind1,ind2,seed), np.array(caltimes), delimiter=",")
 
 # for _ in range(1000):
 #     torch.randn(100)
@@ -231,43 +181,45 @@ for L in Ls:
 #         np.savetxt("saved/RRNQSW_L{}_{}_{}_times_seed{}.txt".format(L,ind1,ind2,seed), np.array(caltimes), delimiter=",")
 
 
-for _ in range(1000):
-    torch.randn(100)
-    np.random.rand(100)
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
 
-for L in Ls:
-    soboleng = torch.quasirandom.SobolEngine(dimension=2, scramble=False)
-    net = soboleng.draw(L)
-    alpha = net[:, [0]]
-    tau = net[:, [1]]
-    theta = torch.cat([2 * torch.sqrt(tau - tau ** 2) * torch.cos(2 * np.pi * alpha),
-                       2 * torch.sqrt(tau - tau ** 2) * torch.sin(2 * np.pi * alpha), 1 - 2 * tau], dim=1).to(device)
-    for seed in [1,2,3]:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        random.seed(seed)
-        X=torch.tensor(source, requires_grad=True,device=device)
-        optimizer = torch.optim.SGD([X], lr=learning_rate)
-        points=[]
-        caltimes=[]
-        distances=[]
-        start = time.time()
-        for i in range(N_step):
-            if (i in print_steps):
-                distance,cal_time=compute_true_Wasserstein(X, Y), time.time() - start
-                print("W {}:{} ({}s)".format(i + 1, distance,np.round(cal_time,2)))
-                points.append(X.clone().cpu().data.numpy())
-                caltimes.append(cal_time)
-                distances.append(distance)
-            optimizer.zero_grad()
-            sw= torch.pow(one_dimensional_Wasserstein_prod(X,Y,theta,p=2).mean(),1./2)
-            loss= N*sw
-            loss.backward()
-            optimizer.step()
-        points.append(Y.clone().cpu().data.numpy())
-        np.save("saved/QSW_L{}_{}_{}_points_seed{}.npy".format(L,ind1,ind2,seed),np.stack(points))
-        np.savetxt("saved/QSW_L{}_{}_{}_distances_seed{}.txt".format(L,ind1,ind2,seed), np.array(distances), delimiter=",")
-        np.savetxt("saved/QSW_L{}_{}_{}_times_seed{}.txt".format(L,ind1,ind2,seed), np.array(caltimes), delimiter=",")
+# for L in Ls:
+#     soboleng = torch.quasirandom.SobolEngine(dimension=2, scramble=False)
+#     net = soboleng.draw(L)
+#     alpha = net[:, [0]]
+#     tau = net[:, [1]]
+#     theta = torch.cat([2 * torch.sqrt(tau - tau ** 2) * torch.cos(2 * np.pi * alpha),
+#                        2 * torch.sqrt(tau - tau ** 2) * torch.sin(2 * np.pi * alpha), 1 - 2 * tau], dim=1).to(device)
+#     for seed in [1,2,3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+#         X=torch.tensor(source, requires_grad=True,device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points=[]
+#         caltimes=[]
+#         distances=[]
+#         start = time.time()
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance,cal_time=compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("W {}:{} ({}s)".format(i + 1, distance,np.round(cal_time,2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+#             optimizer.zero_grad()
+#             sw= torch.pow(one_dimensional_Wasserstein_prod(X,Y,theta,p=2).mean(),1./2)
+#             loss= N*sw
+#             loss.backward()
+#             optimizer.step()
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/QSW_L{}_{}_{}_points_seed{}.npy".format(L,ind1,ind2,seed),np.stack(points))
+#         np.savetxt("saved/QSW_L{}_{}_{}_distances_seed{}.txt".format(L,ind1,ind2,seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/QSW_L{}_{}_{}_times_seed{}.txt".format(L,ind1,ind2,seed), np.array(caltimes), delimiter=",")
+
+
 
 # for _ in range(1000):
 #     torch.randn(100)
@@ -611,3 +563,360 @@ for L in Ls:
 #         np.save("saved/ROCQSW_L{}_{}_{}_points_seed{}.npy".format(L,ind1,ind2,seed),np.stack(points))
 #         np.savetxt("saved/ROCQSW_L{}_{}_{}_distances_seed{}.txt".format(L,ind1,ind2,seed), np.array(distances), delimiter=",")
 #         np.savetxt("saved/ROCQSW_L{}_{}_{}_times_seed{}.txt".format(L,ind1,ind2,seed), np.array(caltimes), delimiter=",")
+
+for _ in range(1000):
+    torch.randn(100)
+    np.random.rand(100)
+
+for L in Ls:
+    for seed in [1, 2, 3]:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        random.seed(seed)
+        
+        # Generate BO projections once for this pair
+        # Note: Using Xdetach and Ydetach for projection generation
+        theta = get_bosw_bayesian(L, device, Xdetach, Ydetach, p=2, ai="ucb", beta=2.0, seed=seed)
+        
+        # Now optimize with these fixed projections
+        X = torch.tensor(source, requires_grad=True, device=device)
+        optimizer = torch.optim.SGD([X], lr=learning_rate)
+        points = []
+        caltimes = []
+        distances = []
+        start = time.time()
+        
+        for i in range(N_step):
+            if (i in print_steps):
+                distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+                print("BW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+                points.append(X.clone().cpu().data.numpy())
+                caltimes.append(cal_time)
+                distances.append(distance)
+            
+            optimizer.zero_grad()
+            sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta, p=2).mean(), 1./2)
+            loss = N * sw
+            loss.backward()
+            optimizer.step()
+        
+        points.append(Y.clone().cpu().data.numpy())
+        np.save("saved/BOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+        np.savetxt("saved/BOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+        np.savetxt("saved/BOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         # Generate BO projections once for this pair
+#         # Note: Using Xdetach and Ydetach for projection generation
+#         theta = get_bosw_bayesian(L, device, Xdetach, Ydetach, p=2, ai="ei", beta=2.0)
+        
+#         # Now optimize with these fixed projections
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("EBW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/EBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/EBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/EBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         # Generate BO projections once for this pair
+#         # Note: Using Xdetach and Ydetach for projection generation
+#         theta = get_bosw_bayesian(L, device, Xdetach, Ydetach, p=2, ai="logei", beta=2.0)
+        
+#         # Now optimize with these fixed projections
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("LBW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/LBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/LBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/LBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         # Generate BO projections once for this pair
+#         # Note: Using Xdetach and Ydetach for projection generation
+#         theta = get_bosw_bayesian(L, device, Xdetach, Ydetach, p=2, ai="thompson", beta=2.0)
+        
+#         # Now optimize with these fixed projections
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("TBW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/TBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/TBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/TBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# # RBOSW
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         # Initialize with BO projections
+#         theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="ucb", beta=2.0, seed=seed)
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("RW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+            
+#             # Periodically update projections
+#             if i > 0 and i % 25 == 0:
+#                 theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="ucb", beta=2.0, seed=seed)
+            
+#             # Add small random rotation for diversity (like RRQSW)
+#             U = torch.qr(torch.randn(3, 3, device=device))[0]
+#             theta_rotated = torch.matmul(theta, U)
+            
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta_rotated, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/RBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/RBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/RBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         # Initialize with BO projections
+#         theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="ei", beta=2.0)
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("REW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+            
+#             # Periodically update projections (every 50 iterations)
+#             if i > 0 and i % 50 == 0:
+#                 theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="ei", beta=2.0)
+            
+#             # Add small random rotation for diversity (like RRQSW)
+#             U = torch.qr(torch.randn(3, 3, device=device))[0]
+#             theta_rotated = torch.matmul(theta, U)
+            
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta_rotated, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/REBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/REBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/REBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         # Initialize with BO projections
+#         theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="logei", beta=2.0)
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("RLW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+            
+#             # Periodically update projections (every 50 iterations)
+#             if i > 0 and i % 50 == 0:
+#                 theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="logei", beta=2.0)
+            
+#             # Add small random rotation for diversity (like RRQSW)
+#             U = torch.qr(torch.randn(3, 3, device=device))[0]
+#             theta_rotated = torch.matmul(theta, U)
+            
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta_rotated, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/RLBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/RLBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/RLBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
+
+# for _ in range(1000):
+#     torch.randn(100)
+#     np.random.rand(100)
+
+# for L in Ls:
+#     for seed in [1, 2, 3]:
+#         np.random.seed(seed)
+#         torch.manual_seed(seed)
+#         random.seed(seed)
+        
+#         X = torch.tensor(source, requires_grad=True, device=device)
+#         optimizer = torch.optim.SGD([X], lr=learning_rate)
+#         points = []
+#         caltimes = []
+#         distances = []
+#         start = time.time()
+        
+#         # Initialize with BO projections
+#         theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="thompson", beta=2.0)
+        
+#         for i in range(N_step):
+#             if (i in print_steps):
+#                 distance, cal_time = compute_true_Wasserstein(X, Y), time.time() - start
+#                 print("RTW {}:{} ({}s)".format(i + 1, distance, np.round(cal_time, 2)))
+#                 points.append(X.clone().cpu().data.numpy())
+#                 caltimes.append(cal_time)
+#                 distances.append(distance)
+            
+#             optimizer.zero_grad()
+            
+#             # Periodically update projections (every 50 iterations)
+#             if i > 0 and i % 50 == 0:
+#                 theta = get_bosw_bayesian(L, device, X.detach(), Y, p=2, ai="thompson", beta=2.0)
+            
+#             # Add small random rotation for diversity (like RRQSW)
+#             U = torch.qr(torch.randn(3, 3, device=device))[0]
+#             theta_rotated = torch.matmul(theta, U)
+            
+#             sw = torch.pow(one_dimensional_Wasserstein_prod(X, Y, theta_rotated, p=2).mean(), 1./2)
+#             loss = N * sw
+#             loss.backward()
+#             optimizer.step()
+        
+#         points.append(Y.clone().cpu().data.numpy())
+#         np.save("saved/RTBOSW_L{}_{}_{}_points_seed{}.npy".format(L, ind1, ind2, seed), np.stack(points))
+#         np.savetxt("saved/RTBOSW_L{}_{}_{}_distances_seed{}.txt".format(L, ind1, ind2, seed), np.array(distances), delimiter=",")
+#         np.savetxt("saved/RTBOSW_L{}_{}_{}_times_seed{}.txt".format(L, ind1, ind2, seed), np.array(caltimes), delimiter=",")
