@@ -253,35 +253,32 @@ def get_cqsw_projections(L, device, iters=100):
     return thetas_opt.detach()
 
 def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
-    import math, random
-    import numpy as np
+    # --- determinism ---
     if seed is not None:
         torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
     dtype = pc1.dtype
 
+    # ----------------------- BOSW proxy -----------------------
     @torch.no_grad()
     def one_d_wasserstein_mean(pc1, pc2, theta):
         return one_dimensional_Wasserstein_prod(pc1, pc2, theta, p=p).mean().sqrt()
 
-    # ---------------- GP with lengthscale Bayes-averaging ----------------
+    # ---------------- GP with geodesic RBF kernel ----------------
     class LightweightGP:
-        def __init__(self, kernel_lengthscale=0.5, base_noise=1e-3, top_k_ls=3, tau=0.25):
+        def __init__(self, kernel_lengthscale=0.5, base_noise=1e-3):
             self.lengthscale = float(kernel_lengthscale)
             self.base_noise  = float(base_noise)
-            self.top_k_ls = int(top_k_ls)
-            self.tau = float(tau)  # temperature for LS weights
-            self.X_train = None; self.y_train = None
-            self.y_mean = torch.tensor(0.0, device=device, dtype=dtype)
-            self.y_std  = torch.tensor(1.0, device=device, dtype=dtype)
-            self._ls_list = None
-            self._nll_list = None
+            self.X_train = None
+            self.y_train = None
+            self.y_mean  = torch.tensor(0.0, device=device, dtype=dtype)
+            self.y_std   = torch.tensor(1.0, device=device, dtype=dtype)
 
         def _kernel_ls(self, X1, X2, ls: float):
             dot = torch.clamp(X1 @ X2.T, -0.9999, 0.9999)
-            ang = torch.acos(dot)
+            ang = torch.acos(dot)  # [0, pi]
             return torch.exp(-0.5 * (ang / ls) ** 2)
 
-        def _nll_from_K(self, K, y_std):
+        def _mll(self, K, y_std):
             n = y_std.numel()
             I = torch.eye(n, device=K.device, dtype=K.dtype)
             jitter = self.base_noise
@@ -289,118 +286,113 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
                 try:
                     Lc = torch.linalg.cholesky(K + jitter * I)
                     alpha = torch.cholesky_solve(y_std.view(-1,1), Lc).view(-1)
-                    return 0.5 * (y_std @ alpha) + torch.log(torch.diag(Lc)).sum() + 0.5 * n * math.log(2*math.pi)
+                    nll = 0.5 * (y_std @ alpha) + torch.log(torch.diag(Lc)).sum() + 0.5 * n * np.log(2*np.pi)
+                    return nll
                 except RuntimeError:
                     jitter *= 10.0
             # SVD fallback
             U,S,Vt = torch.linalg.svd(K)
             S = torch.clamp(S, min=1e-8)
             Kinv_y = U @ torch.diag(1/S) @ Vt @ y_std
-            return 0.5 * (y_std @ Kinv_y) + 0.5 * torch.log(S).sum() + 0.5 * n * math.log(2*math.pi)
+            nll = 0.5 * (y_std @ Kinv_y) + 0.5 * torch.log(S).sum() + 0.5 * n * np.log(2*np.pi)
+            return nll
 
         def fit(self, X, y):
-            self.X_train = X; self.y_train = y
-            self.y_mean = y.mean(); self.y_std = y.std() + 1e-6
+            self.X_train = X
+            self.y_train = y
+            self.y_mean  = y.mean()
+            self.y_std   = y.std() + 1e-6
             ys = (y - self.y_mean) / self.y_std
 
+            # lengthscale grid (kept from the good run)
             ls_grid = torch.tensor([0.10,0.15,0.20,0.30,0.45,0.60,0.80,1.00,1.30,1.60,2.00],
                                    device=X.device, dtype=X.dtype)
             if X.size(0) > 5:
                 ang_all = torch.acos(torch.clamp(X @ X.T, -1, 1))
                 valid = ang_all[ang_all > 1e-6]
-                if valid.numel() > 0:
-                    md = valid.median()
-                    extra = torch.clamp(md * torch.tensor([0.5,0.75,1.0,1.5,2.0], device=X.device, dtype=X.dtype),
-                                        0.10, 2.00)
-                    ls_grid = torch.unique(torch.cat([ls_grid, extra]))
-                    ls_grid, _ = torch.sort(ls_grid)
+                md = valid.median() if valid.numel() > 0 else torch.tensor(0.5, device=X.device, dtype=X.dtype)
+                ls_med = torch.clamp(md * torch.tensor([0.5,0.75,1.0,1.5,2.0], device=X.device, dtype=X.dtype),
+                                     0.10, 2.00)
+                ls_grid = torch.unique(torch.cat([ls_grid, ls_med]))
+                ls_grid, _ = torch.sort(ls_grid)
 
-            nlls = []
+            best_ls, best_nll = self.lengthscale, None
             for ls in ls_grid:
                 K = self._kernel_ls(X, X, float(ls))
-                nlls.append(self._nll_from_K(K, ys).item())
-            nlls = torch.tensor(nlls, device=X.device, dtype=torch.float64)
-            order = torch.argsort(nlls)
-            top_idx = order[:min(self.top_k_ls, ls_grid.numel())]
-            self._ls_list = [float(ls_grid[i].item()) for i in top_idx]
-            self._nll_list = [float(nlls[i].item()) for i in top_idx]
-            self.lengthscale = self._ls_list[0]
-
-        def _predict_single_ls(self, Xtest, ls):
-            Xtr = self.X_train; ys = (self.y_train - self.y_mean) / self.y_std
-            Ktt = self._kernel_ls(Xtr, Xtr, ls)
-            Kst = self._kernel_ls(Xtest, Xtr, ls)
-            Kss = self._kernel_ls(Xtest, Xtest, ls)
-            n = Ktt.size(0)
-            I = torch.eye(n, device=Ktt.device, dtype=Ktt.dtype)
-            jitter = self.base_noise
-            for _ in range(5):
-                try:
-                    Lc = torch.linalg.cholesky(Ktt + jitter * I)
-                    v = torch.linalg.solve(Lc, Kst.T)
-                    alpha = torch.cholesky_solve(ys.view(-1,1), Lc).view(-1)
-                    mu_std = Kst @ alpha
-                    var = torch.diag(Kss - v.T @ v).clamp_min(1e-8)
-                    return mu_std, var
-                except RuntimeError:
-                    jitter *= 10.0
-            # SVD fallback
-            U,S,Vt = torch.linalg.svd(Ktt)
-            S = torch.clamp(S, min=1e-8)
-            Kinv = U @ torch.diag(1/S) @ Vt
-            mu_std = Kst @ (Kinv @ ys)
-            var = torch.diag(Kss - Kst @ (Kinv @ Kst.T)).clamp_min(1e-8)
-            return mu_std, var
+                nll = self._mll(K, ys)
+                if (best_nll is None) or (nll < best_nll):
+                    best_nll, best_ls = nll, float(ls)
+            self.lengthscale = best_ls
 
         def predict(self, Xtest):
             if self.X_train is None or self.X_train.numel() == 0:
                 n = Xtest.size(0)
                 return (torch.zeros(n, device=Xtest.device, dtype=Xtest.dtype) + self.y_mean,
                         torch.ones(n, device=Xtest.device, dtype=Xtest.dtype)  * self.y_std)
-            # Bayes-average over top LS
-            nll = torch.tensor(self._nll_list, device=Xtest.device, dtype=torch.float64)
-            w = torch.softmax(-(nll - nll.min())/max(self.tau, 1e-6), dim=0).to(Xtest.dtype)
-            mus = []; vars_ = []
-            for ls in self._ls_list:
-                mu_std, var_std = self._predict_single_ls(Xtest, ls)
-                mu = mu_std * self.y_std + self.y_mean
-                std = torch.sqrt(var_std.clamp_min(1e-12)) * self.y_std
-                mus.append(mu); vars_.append(std**2)
-            mu_mix = torch.zeros_like(mus[0])
-            m2_mix = torch.zeros_like(vars_[0])
-            for wi, mi, vi in zip(w, mus, vars_):
-                mu_mix = mu_mix + wi * mi
-                m2_mix = m2_mix + wi * (vi + mi**2)
-            var_mix = (m2_mix - mu_mix**2).clamp_min(1e-12)
-            return mu_mix, torch.sqrt(var_mix)
 
-    # ---- sphere utilities ----
-    def _normalize_rows(V: torch.Tensor):
-        return V / (V.norm(dim=1, keepdim=True) + 1e-12)
+            Ktt = self._kernel_ls(self.X_train, self.X_train, self.lengthscale)
+            Kst = self._kernel_ls(Xtest, self.X_train, self.lengthscale)
+            Kss = self._kernel_ls(Xtest, Xtest, self.lengthscale)
 
-    def _canonicalize_rows(V: torch.Tensor):
-        s = torch.sign(torch.where(V[:,0].abs() > 1e-12, V[:,0],
-                            torch.where(V[:,1].abs() > 1e-12, V[:,1], V[:,2])))
-        s = torch.where(s == 0, torch.ones_like(s), s)
-        return V * s.view(-1,1)
+            n = Ktt.size(0)
+            I = torch.eye(n, device=Ktt.device, dtype=Ktt.dtype)
+            jitter = self.base_noise
+            for _ in range(5):
+                try:
+                    Lc = torch.linalg.cholesky(Ktt + jitter * I)
+                    break
+                except RuntimeError:
+                    jitter *= 10.0
+            else:
+                U,S,Vt = torch.linalg.svd(Ktt)
+                S = torch.clamp(S, min=1e-8)
+                Kinv = U @ torch.diag(1/S) @ Vt
+                ys = (self.y_train - self.y_mean) / self.y_std
+                mu_std = Kst @ (Kinv @ ys)
+                var = torch.diag(Kss - Kst @ (Kinv @ Kst.T)).clamp_min(1e-8)
+                return mu_std * self.y_std + self.y_mean, torch.sqrt(var) * self.y_std
 
-    def spherical_fibonacci(n, device, dtype):
-        if n <= 0: return torch.empty(0,3, device=device, dtype=dtype)
-        k = torch.arange(n, device=device, dtype=torch.float64) + 0.5
-        z = 1.0 - 2.0 * k / float(n)
-        phi = (2.0 * math.pi) * (k / ((1.0 + math.sqrt(5.0)) / 2.0))
-        r = torch.sqrt((1.0 - z*z).clamp_min(0.0))
-        x = (r * torch.cos(phi)).to(dtype)
-        y = (r * torch.sin(phi)).to(dtype)
-        z = z.to(dtype)
-        V = torch.stack([x,y,z], dim=1)
-        return _canonicalize_rows(_normalize_rows(V))
+            ys = (self.y_train - self.y_mean) / self.y_std
+            alpha = torch.cholesky_solve(ys.view(-1,1), Lc).view(-1)
+            mu_std = Kst @ alpha
+            v = torch.linalg.solve(Lc, Kst.T)
+            var = torch.diag(Kss - v.T @ v).clamp_min(1e-8)
 
+            mu = mu_std * self.y_std + self.y_mean
+            std = torch.sqrt(var) * self.y_std
+            return mu, std
+
+    # ---------------- proxy objective (unchanged) ----------------
+    @torch.no_grad()
+    def compute_enhanced_objective(proj, existing_projections, pc1, pc2, cached_current_sw=None):
+        if len(existing_projections) > 0:
+            existing_tensor = torch.stack(existing_projections)
+            distances = torch.norm(existing_tensor - proj.unsqueeze(0), dim=1)
+            min_dist = distances.min().item()
+            avg_dist = distances.mean().item()
+            angular_dists = torch.acos(torch.clamp(torch.matmul(existing_tensor, proj), -0.9999, 0.9999))
+            min_angular = angular_dists.min().item()
+            coverage_score = min_dist * (1 + 0.3 * avg_dist) * (1 + 0.2 * min_angular)
+        else:
+            coverage_score = 1.0
+
+        if len(existing_projections) > 0 and cached_current_sw is not None:
+            new_projs = torch.cat([existing_tensor, proj.unsqueeze(0)])
+            new_sw = one_d_wasserstein_mean(pc1, pc2, new_projs)
+            contribution = abs(new_sw.item() - cached_current_sw.item())
+        else:
+            contribution = one_d_wasserstein_mean(pc1, pc2, proj.unsqueeze(0)).item()
+
+        raw_obj = coverage_score * (1 + 0.5 * contribution)
+        return torch.sqrt(torch.tensor(raw_obj + 1e-6, device=proj.device, dtype=proj.dtype))  # maximize
+
+    # ---------------- sphere helpers ----------------
     def _tangent_basis(u: torch.Tensor):
         ref = torch.tensor((1.0, 0.0, 0.0), device=u.device, dtype=u.dtype)
         if torch.abs(u[0]) >= 0.9:
             ref = torch.tensor((0.0, 1.0, 0.0), device=u.device, dtype=u.dtype)
-        b1 = torch.cross(u, ref, dim=0); n1 = b1.norm()
+        b1 = torch.cross(u, ref, dim=0)
+        n1 = b1.norm()
         if n1 < 1e-12:
             ref = torch.tensor((0.0, 0.0, 1.0), device=u.device, dtype=u.dtype)
             b1 = torch.cross(u, ref, dim=0); n1 = b1.norm()
@@ -415,98 +407,109 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
         x64 = x64 / (x64.norm() + 1e-18)
         return x64.to(u.dtype)
 
-    # ---- objectives & helpers ----
-    @torch.no_grad()
-    def compute_enhanced_objective(proj, existing_projections, pc1, pc2, cached_current_sw=None):
-        if len(existing_projections) > 0:
-            existing_tensor = torch.stack(existing_projections)
-            distances = torch.norm(existing_tensor - proj.unsqueeze(0), dim=1)
-            min_dist = distances.min().item()
-            avg_dist = distances.mean().item()
-            angular_dists = torch.acos(torch.clamp(torch.matmul(existing_tensor, proj), -0.9999, 0.9999))
-            min_angular = angular_dists.min().item()
-            coverage_score = min_dist * (1 + 0.3 * avg_dist) * (1 + 0.2 * min_angular)
-        else:
-            coverage_score = 1.0
-        if len(existing_projections) > 0 and cached_current_sw is not None:
-            new_projs = torch.cat([existing_tensor, proj.unsqueeze(0)])
-            new_sw = one_d_wasserstein_mean(pc1, pc2, new_projs)
-            contribution = abs(new_sw.item() - cached_current_sw.item())
-        else:
-            contribution = one_d_wasserstein_mean(pc1, pc2, proj.unsqueeze(0)).item()
-        raw_obj = coverage_score * (1 + 0.5 * contribution)
-        return torch.sqrt(torch.tensor(raw_obj + 1e-6, device=proj.device, dtype=proj.dtype))
+    def _normalize_rows(V: torch.Tensor):
+        return V / (V.norm(dim=1, keepdim=True) + 1e-12)
 
-    @torch.no_grad()
-    def current_bosw(thetas):
-        if thetas is None or len(thetas) == 0: return None
-        return one_d_wasserstein_mean(pc1, pc2, thetas)
+    # ---- antipodal folding (canonicalize ±θ) ----
+    def _canonicalize_rows(V: torch.Tensor):
+        # flip sign so the first nonzero component is positive
+        s = torch.sign(torch.where(V[:,0].abs() > 1e-12, V[:,0],
+                            torch.where(V[:,1].abs() > 1e-12, V[:,1], V[:,2])))
+        s = torch.where(s == 0, torch.ones_like(s), s)
+        return V * s.view(-1,1)
 
-    @torch.no_grad()
-    def delta_improvement(proj, existing_thetas, bosw_cur):
-        if bosw_cur is None:
-            return one_d_wasserstein_mean(pc1, pc2, proj.unsqueeze(0))
-        new_sw = one_d_wasserstein_mean(pc1, pc2, torch.cat([existing_thetas, proj.unsqueeze(0)], dim=0))
-        return torch.clamp(bosw_cur - new_sw, min=0.0)
+    def _sample_around_points(points, k_total, progress):
+        if k_total <= 0 or len(points) == 0:
+            return None
+        pts = []
+        k_per = max(1, k_total // len(points))
+        radius = 0.08 * (1.0 - progress) + 0.015  # a bit tighter than before
+        for c in points:
+            b1, b2 = _tangent_basis(c)
+            for _ in range(k_per):
+                a = torch.randn(2, device=c.device, dtype=c.dtype)
+                a = a / (a.norm() + 1e-12)
+                v = a[0] * b1 + a[1] * b2
+                pts.append(_exp_map(c, v, radius))
+        return torch.stack(pts) if len(pts) > 0 else None
 
+    # ---------------- candidates: random + SQSW + repulsive + elite(20%) ----------------
     def generate_smart_candidates(existing_projs, n_candidates, device, progress, X_train=None, y_train=None):
         chunks = []
-        # random & SQSW & Sobol-on-sphere
-        chunks.append(rand_projections(3, n_candidates // 4, device).to(dtype))
-        k_quasi = n_candidates // 4
-        if k_quasi > 0:
-            chunks.append(get_sqsw_projections(k_quasi, device).to(dtype))
-        k_sob = n_candidates // 4
-        if k_sob > 0:
-            sob = torch.quasirandom.SobolEngine(dimension=2, scramble=True)
-            u = sob.draw(k_sob).to(device)
-            az = 2 * math.pi * u[:, 0]
-            z  = 2 * u[:, 1] - 1
-            r  = torch.sqrt((1 - z*z).clamp_min(0))
-            sobol_sphere = torch.stack([r*torch.cos(az), r*torch.sin(az), z], dim=1).to(dtype)
-            sobol_sphere = _normalize_rows(sobol_sphere)
-            chunks.append(_canonicalize_rows(sobol_sphere))
-        # spherical Fibonacci (uniform)
-        k_fib = n_candidates - sum(c.size(0) for c in chunks)
-        if k_fib > 0:
-            chunks.append(spherical_fibonacci(k_fib, device, dtype))
-
-        # mild repulsive around existing
+        # random
+        n_random = n_candidates // 4
+        chunks.append(rand_projections(3, n_random, device).to(dtype))
+        # quasi
+        n_quasi = n_candidates // 4
+        if n_quasi > 0:
+            chunks.append(get_sqsw_projections(n_quasi, device).to(dtype))
+        # repulsive around existing
         if len(existing_projs) > 0:
-            n_rep = max(0, n_candidates // 8)
+            n_rep = n_candidates // 6
             rep = []
             E = torch.stack(existing_projs).to(dtype)
             for _ in range(n_rep):
                 point = rand_projections(3, 1, device).squeeze(0).to(dtype)
-                for _ in range(3):
+                for _ in range(4):
                     diffs = E - point
                     d = diffs.norm(dim=1, keepdim=True).clamp(min=0.1)
-                    point = (point + 0.06 * (diffs / (d**3)).sum(dim=0))
+                    point = (point + 0.1 * (diffs / (d**3)).sum(dim=0))
                     point = point / point.norm()
                 rep.append(point)
-            if rep: chunks.append(torch.stack(rep))
+            if rep:
+                chunks.append(torch.stack(rep))
+        # elite (20%) with spacing
+        if X_train is not None and y_train is not None and X_train.numel() > 0:
+            k_el = max(0, n_candidates // 5)
+            if k_el > 0:
+                k_elite = max(2, min(12, X_train.size(0) // 8))
+                elite_idx = torch.topk(y_train, k_elite).indices
+                elite_pts = X_train[elite_idx]
+                el_per = max(1, k_el // max(1, elite_pts.size(0)))
+                elite_cands_list = []
+                for e in elite_pts:
+                    cand_e = _sample_around_points([e], el_per, progress)
+                    if cand_e is not None:
+                        elite_cands_list.append(cand_e)
+                if elite_cands_list:
+                    elite_cands = torch.cat(elite_cands_list, dim=0)
+                    if elite_cands.size(0) > 1:
+                        m = elite_cands.size(0)
+                        keep = torch.ones(m, dtype=torch.bool, device=elite_cands.device)
+                        thr = 0.06  # spacing among elite proposals
+                        for i in range(m):
+                            if not keep[i]: continue
+                            ang = torch.acos(torch.clamp(elite_cands @ elite_cands[i], -1, 1))
+                            collide = (ang < thr)
+                            collide[i] = False
+                            keep = keep & (~collide)
+                        elite_cands = elite_cands[keep]
+                    chunks.append(elite_cands)
 
         V = torch.cat(chunks, dim=0)
-        V = _canonicalize_rows(_normalize_rows(V))
+        V = _normalize_rows(V)
+        V = _canonicalize_rows(V)   # << antipodal folding
         return V
 
+    # ---------------- local micro-search on proxy ----------------
     @torch.no_grad()
-    def tangent_proxy_improve(point, existing_list, pc1, pc2, cur_sw, progress, tries=16):
+    def tangent_proxy_improve(point, existing_list, pc1, pc2, cur_sw, progress, tries=6):
         best = point
         best_val = compute_enhanced_objective(point, existing_list, pc1, pc2, cached_current_sw=cur_sw)
-        r0 = 0.06 * (1.0 - progress) + 0.012
+        r0 = 0.08 * (1.0 - progress) + 0.015   # slightly smaller, safer
         b1, b2 = _tangent_basis(point)
+        steps = [ r0, 0.5*r0, -0.5*r0, -r0 ]
         dirs = (b1, b2,
                 (b1+b2)/((b1+b2).norm()+1e-12),
                 (b1-b2)/((b1-b2).norm()+1e-12))
-        for a in (r0, 0.5*r0, -0.5*r0, -r0):
+        for a in steps:
             for vdir in dirs:
                 cand = _exp_map(point, vdir, a)
                 val = compute_enhanced_objective(cand, existing_list, pc1, pc2, cached_current_sw=cur_sw)
                 if val > best_val:
                     best_val, best = val, cand
         for _ in range(tries):
-            a = torch.randn(2, device=point.device, dtype=point.dtype); a = a/(a.norm()+1e-12)
+            a = torch.randn(2, device=point.device, dtype=point.dtype); a = a / (a.norm()+1e-12)
             v = a[0]*b1 + a[1]*b2
             cand = _exp_map(point, v, r0)
             val = compute_enhanced_objective(cand, existing_list, pc1, pc2, cached_current_sw=cur_sw)
@@ -514,13 +517,14 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
                 best_val, best = val, cand
         return best
 
-    # ---------------- main ----------------
+    # ---------------- main loop ----------------
     selected = []
-    gp = LightweightGP(kernel_lengthscale=0.3, top_k_ls=3, tau=0.25)
+    gp = LightweightGP(kernel_lengthscale=0.3)
 
     if L <= 5:
         return _canonicalize_rows(get_sqsw_projections(L, device).to(dtype))
 
+    # init: coverage start
     n_init = min(15, L // 3)
     init = _canonicalize_rows(get_sqsw_projections(n_init, device).to(dtype))
     X_train, y_train = [], []
@@ -534,6 +538,7 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
     y_train_sq = y_train ** 2
 
     while len(selected) < L:
+        # occasional de-dup
         if len(X_train) > 50 and len(X_train) % 50 == 0:
             keep = []
             for i in range(len(X_train)):
@@ -548,18 +553,22 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
         batch_size = min(max(1, remaining // 5), 10)
         progress = len(selected) / float(L)
 
-        n_candidates = 3500 if progress <= 0.4 else (6500 if progress <= 0.7 else 9000)
+        # candidate pool (bigger late)
+        n_candidates = 4000 if progress <= 0.4 else (9000 if progress <= 0.7 else 14000)
         candidates = generate_smart_candidates(selected, n_candidates, device, progress, X_train, y_train)
 
+        # adaptive spacing
         if len(selected) > 0 and len(selected) < int(0.95 * L):
             E = torch.stack(selected).to(dtype)
             min_d = torch.cdist(candidates, E, p=2).min(dim=1)[0]
-            thr = 0.18 * (1.0 - progress) + 0.06 * progress
+            thr = 0.20 * (1.0 - progress) + 0.05 * progress  # a touch milder
             keep = min_d > thr
-            if keep.any(): candidates = candidates[keep]
+            if keep.any():
+                candidates = candidates[keep]
             if candidates.size(0) < max(150, 12 * batch_size):
-                candidates = torch.cat([candidates, _canonicalize_rows(get_sqsw_projections(300, device).to(dtype))], dim=0)
+                candidates = torch.cat([candidates, _canonicalize_rows(get_sqsw_projections(400, device).to(dtype))], dim=0)
 
+        # acquisition on proxy
         mu_g, sigma_g = gp.predict(candidates)
         mu_f = mu_g ** 2
         sigma_f = (2 * mu_g * sigma_g).clamp_min(1e-12)
@@ -567,117 +576,54 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
         beta_now = max(0.25, beta * (1.0 - progress)**2) if kind_now == 'ucb' else beta
         acq = acquisition_function(mu_f, sigma_f, y_train_sq, kind=kind_now, beta=beta_now)
 
-        # ---- pre-thin top-K for diversity BEFORE proxy scoring (SAFE VERSION)
+        # small TS only very early
+        if progress < 0.4:
+            ts_sample = mu_f + sigma_f.sqrt() * torch.randn_like(mu_f)
+            acq = 0.9 * acq + 0.1 * ts_sample
+
+        # shortlist by acq, then re-rank by proxy + diversity
         n_select = min(batch_size, L - len(selected))
-        K = min(900, max(320, int(240 + 1500 * (progress**1.3))))
-        K = min(K, acq.numel())  # never exceed available
-        top_idx = torch.topk(acq, K).indices
-        top_cands = candidates[top_idx]
+        K = min(1200, max(300, int(200 + 3000 * (progress**1.4))))
+        K = min(K, acq.numel())
+        topk_idx = torch.topk(acq, K).indices
+        top_cands = candidates[topk_idx]
 
-        # greedy pre-thinning by angular distance
-        pre_thr = 0.22 * (1.0 - progress) + 0.14 * progress  # ~0.22→0.14
-        K_local = top_cands.size(0)
-        if K_local == 0:
-            # emergency fallback: at least take the global best acq
-            arg = torch.argmax(acq).item()
-            top_cands = candidates[arg:arg+1]
-            top_idx = torch.tensor([arg], device=device)
-            K_local = 1
-
-        keep_mask = torch.zeros(K_local, dtype=torch.bool, device=device)
-        kept = []
-        for i in range(K_local):
-            if not keep_mask[i]:
-                kept.append(i)
-                ang = torch.acos(torch.clamp((top_cands @ top_cands[i]), -1.0, 1.0))
-                collide = (ang < pre_thr)
-                keep_mask = keep_mask | collide
-                keep_mask[i] = True
-        kept_idx_local = torch.tensor(kept, device=device, dtype=torch.long)
-        top_cands = top_cands[kept_idx_local]
-        top_idx = top_idx[kept_idx_local]
-
-        # proxy scoring
         with torch.no_grad():
             cur_sw = one_d_wasserstein_mean(pc1, pc2, torch.stack(selected)) if selected else None
-            proxy_scores = []
+            scores = []
             for j in range(top_cands.size(0)):
                 s = compute_enhanced_objective(top_cands[j], selected, pc1, pc2, cached_current_sw=cur_sw)
-                proxy_scores.append(s)
-            proxy_scores = torch.stack(proxy_scores) if len(proxy_scores) > 0 else torch.zeros(0, device=device, dtype=dtype)
+                scores.append(s)
+            scores = torch.stack(scores)
 
-        # ---- SECOND shortlist (K2) – make sure K2 ≤ available and ≥ 1
-        avail = top_cands.size(0)
-        if avail == 0:
-            # extreme fallback: take best global acq
-            arg = torch.argmax(acq).item()
-            top_cands2 = candidates[arg:arg+1]
-            top_idx2 = torch.tensor([arg], device=device)
-        else:
-            K2_raw = max(8, avail // 10)         # scale with avail
-            K2 = min(48, max(1, K2_raw))         # clamp to [1, 48]
-            K2 = min(K2, avail)                   # never exceed available
-            topk2_idx_local = torch.topk(proxy_scores, K2).indices
-            top_cands2 = top_cands[topk2_idx_local]
-            top_idx2 = top_idx[topk2_idx_local]
-
-        # "true" delta scores for blended ranking
-        true_scores = []
-        with torch.no_grad():
-            existing_tensor = torch.stack(selected) if selected else None
-            bosw_cur = current_bosw(existing_tensor) if existing_tensor is not None else None
-            for j in range(top_cands2.size(0)):
-                td = delta_improvement(top_cands2[j], existing_tensor, bosw_cur)
-                true_scores.append(td)
-        true_scores = torch.stack(true_scores) if len(true_scores) > 0 else torch.zeros(0, device=device, dtype=dtype)
-
-        def _z(x):
-            m = x.mean(); s = x.std() + 1e-12
-            return (x - m) / s
-
-        # align indexes when avail==0 fallback happened
-        if avail == 0:
-            proxy_sel = torch.tensor([0], device=device)
-        else:
-            proxy_sel = topk2_idx_local
-
-        gamma = float(max(0.0, min(0.4, (progress - 0.70) / 0.30)))  # ≤ 0.4 cap
-        if true_scores.numel() > 0:
-            blended_local = (1.0 - gamma) * _z(proxy_scores[proxy_sel]) + gamma * _z(true_scores)
-        else:
-            blended_local = _z(proxy_scores[proxy_sel]) if proxy_scores.numel() > 0 else torch.zeros(1, device=device, dtype=dtype)
-
-        # selection with mild diversity
+        chosen = []
+        work_scores = scores.clone()
         ls = getattr(gp, 'lengthscale', 0.3)
-        width = max(0.30 * ls, 0.09)
-        strength = 0.60
-        nms_thr = 0.55 * width
+        width = max(0.25 * ls, 0.07)
+        strength = 0.55 if progress < 0.6 else 0.75
+        nms_thr = 0.7 * width
 
-        # map blended_local back into the "top_cands" index space for greedy pick
-        work_scores = torch.full((top_cands.size(0),), -1e9, device=device, dtype=dtype)
-        if avail == 0:
-            work_scores[0] = blended_local[0]
-        else:
-            work_scores[topk2_idx_local] = blended_local
-
-        chosen_global_idx = []
         for _ in range(n_select):
             j = torch.argmax(work_scores).item()
-            chosen_global_idx.append(int(top_idx[j].item()))
+            chosen.append(topk_idx[j].item())
+
             if top_cands.size(0) > 1:
                 ang = torch.acos(torch.clamp((top_cands @ top_cands[j]), -1.0, 1.0))
                 penal = strength * torch.exp(-(ang / width) ** 2)
                 work_scores = work_scores * (1.0 - penal).clamp_min(0.0)
-                suppress = (ang < nms_thr)
+                suppress = ang < nms_thr
                 work_scores[suppress] = -1e9
+
             work_scores[j] = -1e9
 
+        # commit picks + micro proxy refine
         cur_sw = one_d_wasserstein_mean(pc1, pc2, torch.stack(selected)) if selected else None
-        for idx in chosen_global_idx:
+        for idx in chosen:
             proj0 = candidates[idx]
             proj0 = _normalize_rows(proj0.view(1, -1)).view(-1)
             proj0 = _canonicalize_rows(proj0.view(1, -1)).view(-1)
-            proj = tangent_proxy_improve(proj0, selected, pc1, pc2, cur_sw, progress, tries=16)
+            proj = tangent_proxy_improve(proj0, selected, pc1, pc2, cur_sw, progress,
+                                         tries=(6 if progress < 0.7 else 12))
             proj = _canonicalize_rows(proj.view(1, -1)).view(-1)
             selected.append(proj)
             obj = compute_enhanced_objective(proj, selected[:-1], pc1, pc2, cached_current_sw=cur_sw)
@@ -685,14 +631,18 @@ def get_bosw_bayesian(L, device, pc1, pc2, p=2, beta=2.0, seed=None, ai='ucb'):
             y_train = torch.cat([y_train, obj.unsqueeze(0)], dim=0)
             y_train_sq = torch.cat([y_train_sq, obj.unsqueeze(0)**2], dim=0)
 
-        if len(X_train) > 220:
-            keep_idx = list(range(n_init)) + list(range(len(X_train) - 150, len(X_train)))
+        # capacity control
+        if len(X_train) > 240:
+            keep_idx = list(range(n_init)) + list(range(len(X_train) - 160, len(X_train)))
             X_train = X_train[keep_idx]; y_train = y_train[keep_idx]; y_train_sq = y_train_sq[keep_idx]
 
+    # gentle refinement (same)
     if L <= 300:
-        selected = local_refinement_simple(torch.stack(selected), device, n_iters=14)
+        S = local_refinement_simple(torch.stack(selected), device, n_iters=15)
+        selected = local_refinement_simple(S, device, n_iters=12)
 
     return torch.stack(selected) if isinstance(selected, list) else selected
+
 
 
 
